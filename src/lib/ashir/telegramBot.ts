@@ -45,6 +45,24 @@ export class TelegramBotHandler {
   start() {
     if (!this.enabled || this.running) return;
     this.running = true;
+    // 🩹 Critical fix: if a webhook was EVER registered for this bot token (even
+    // once, from an old deployment, a test curl command, or BotFather), Telegram
+    // permanently blocks getUpdates() with a silent 409 "Conflict" error until the
+    // webhook is explicitly deleted. sendMessage() keeps working fine either way —
+    // which is exactly why signals/reports still arrive but button presses never
+    // trigger a reply. We must clear it before the very first poll.
+    this._clearWebhookThenPoll();
+  }
+
+  private async _clearWebhookThenPoll() {
+    try {
+      await axios.get(`https://api.telegram.org/bot${this.token}/deleteWebhook`, {
+        params: { drop_pending_updates: false },
+        timeout: 15000,
+      });
+    } catch (err: any) {
+      console.error("[TelegramBot] deleteWebhook failed (continuing anyway):", err.message || err);
+    }
     this._loop().catch((err) => {
       console.error("[TelegramBot] Polling loop crashed unexpectedly:", err);
       this.running = false;
@@ -94,7 +112,8 @@ export class TelegramBotHandler {
       } catch (err: any) {
         this.consecutiveErrors++;
         const backoff = Math.min(30000, 2000 * this.consecutiveErrors);
-        console.error(`[TelegramBot] Poll error (retrying in ${backoff}ms):`, err.message || err);
+        const tgError = err?.response?.data?.description || err.message || err;
+        console.error(`[TelegramBot] Poll error (retrying in ${backoff}ms): ${tgError}`);
         await new Promise((r) => setTimeout(r, backoff));
       }
     }
